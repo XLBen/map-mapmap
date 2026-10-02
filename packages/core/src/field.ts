@@ -73,6 +73,11 @@ export class Field {
     return Object.keys(this.legend ?? {});
   }
 
+  /** 类别图例（名称→码），序列化用；非 categorical 为 undefined。 */
+  get legendTable(): Record<string, number> | undefined {
+    return this.legend ? { ...this.legend } : undefined;
+  }
+
   lodWidth(lod = 0): number {
     return Math.ceil(this.def.width / strideOf(lod));
   }
@@ -180,6 +185,30 @@ export class Field {
   /** 构建/批量通道（供内部与后续处理器视图用）。 */
   getTile(tx: number, ty: number): Float32Array | undefined {
     return this.tiles.get(tileKey({ lod: 0, tx, ty }));
+  }
+
+  /** 已实例化的 tile（lod 0），序列化用。 */
+  get tileList(): Array<{ tx: number; ty: number }> {
+    const out: Array<{ tx: number; ty: number }> = [];
+    for (const key of this.tiles.keys()) {
+      const [, tx, ty] = key.split(':');
+      out.push({ tx: Number(tx), ty: Number(ty) });
+    }
+    return out;
+  }
+
+  /** 构建路径：把区域内所有 lod 0 采样设为同一值（paint 的底座）。 */
+  fillRegion(r: Region, value: number): void {
+    const d = this.def;
+    const x0 = Math.max(0, Math.floor((r.minX - d.origin.x) / d.resolution));
+    const y0 = Math.max(0, Math.floor((r.minY - d.origin.y) / d.resolution));
+    const x1 = Math.min(d.width, Math.ceil((r.maxX - d.origin.x) / d.resolution));
+    const y1 = Math.min(d.height, Math.ceil((r.maxY - d.origin.y) / d.resolution));
+    for (let sy = y0; sy < y1; sy++) {
+      for (let sx = x0; sx < x1; sx++) {
+        this.setBase(sx, sy, value);
+      }
+    }
   }
 
   setTile(tx: number, ty: number, data: Float32Array): void {

@@ -3,3 +3,5 @@ export * from './field';
 export * from './feature';
 export * from './registry';
 export * from './spatial';
+export * from './serialize';
+export * from './authoring';

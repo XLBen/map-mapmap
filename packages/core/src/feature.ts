@@ -63,11 +63,22 @@ export class FeatureSet {
 
   /** 信任边界：kind 不匹配直接拒绝。 */
   add(f: Feature): void {
+    this.#validate(f);
+    this.#features.push(f);
+  }
+
+  /** 原位替换（modify 的底座），校验同 add。 */
+  replaceAt(index: number, f: Feature): void {
+    if (index < 0 || index >= this.#features.length) throw new Error('replaceAt 越界');
+    this.#validate(f);
+    this.#features[index] = f;
+  }
+
+  #validate(f: Feature): void {
     if (f.kind !== this.kind || f.semantic !== this.semantic) {
       throw new Error(`要素与集合不匹配: 期望 ${this.kind}/${this.semantic}，收到 ${f.kind}/${f.semantic}`);
     }
     bboxOf(f); // 空几何在这里拒绝
-    this.#features.push(f);
   }
 
   // ponytail: O(n) 线性扫描 + bbox 相交；要素过万再考虑网格/R-tree 索引

@@ -54,6 +54,9 @@ importers:
 
   packages/render:
     devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.4
       '@world/core':
         specifier: workspace:*
         version: link:../core
