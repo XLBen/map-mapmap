@@ -1,49 +1,30 @@
 # World Authoring Engine 架构蓝图 v1
 
 > **对应票**：[产出架构蓝图 v1（17 项输出）](https://github.com/XLBen/map-mapmap/issues/5)（Part of: [World Authoring Engine 路线图 #2](https://github.com/XLBen/map-mapmap/issues/2)）
-> **状态**：草案 —— 待 [Spec Lock 评审 #6](https://github.com/XLBen/map-mapmap/issues/6)（HITL）逐项评审锁定后，才成为实施基线。
+> **状态**：**已锁定（Spec Lock 通过）** —— 2026-10-02 经 [Spec Lock 评审 #6](https://github.com/XLBen/map-mapmap/issues/6)（HITL）逐项裁决；15 项裁决与本轮补齐记录见 [§19](#19-决议记录spec-lock-2026-10-02)。Phase B（#7–#12）以本文件为实施基线。
 > **约束基准**：[docs/requirements/engine-charter.md](requirements/engine-charter.md)（66 条设计原则 + 16 条硬原则 + 14 步最小验证用例 + 已锁定决策 Q1–Q5）。
 > **调研输入**（不在 main，按分支引用）：
 > - [docs/research/prior-art.md](https://github.com/XLBen/map-mapmap/blob/research/prior-art/docs/research/prior-art.md)（branch `research/prior-art` @ `8f5bd72`）—— 同类系统先例：失效传播 / Suppression / Provenance / Plugin Lock。
 > - [docs/research/hydrology-algorithms.md](https://github.com/XLBen/map-mapmap/blob/research/hydrology-algorithms/docs/research/hydrology-algorithms.md)（branch `research/hydrology-algorithms` @ `2400189`）—— D8/D∞/MFD 与局部增量更新。
-> **撰写日期**：2026-10-02。
-> **边界声明**：本文档不含任何应用代码；**不修改 charter 正文**；本文提出的 charter 问题、逻辑冲突与简化建议集中记录于 [§18](#18-charter-批判与更简方案6-评审专用)，按维护者拍板（2026-10-02, Q2）全部留 #6 人工逐条定夺。
+> **撰写日期**：2026-10-02（草案）→ 2026-10-02 锁定。
+> **边界声明**：本文档不含任何应用代码；**未修改 charter 正文**；蓝图提出的 charter 问题、逻辑冲突与简化建议集中记录于 [§18](#18-charter-批判与更简方案6-评审专用)，已由 #6 逐条裁决（结果见 [§19](#19-决议记录spec-lock-2026-10-02)）。领域词条已落 [CONTEXT.md](../CONTEXT.md)，不可轻易逆转的硬决策已落 [docs/adr/](adr/)。
 
 ---
 
 ## 0. 评审指南
 
-本文按 charter「输出要求」逐项成节，①–⑰ 与要求一一对应，可逐条勾选评审；⑱ 与三个附录是 charter 额外要求的「主动批判」与交付附带物。
+本文按 charter「输出要求」逐项成节，①–⑰ 与要求一一对应，**已于 2026-10-02 经 [Spec Lock 评审 #6](https://github.com/XLBen/map-mapmap/issues/6) 逐项评审锁定**（评审时的勾选清单已归档为下表的结论）。
 
-**评审清单**
+**评审结论（2026-10-02，逐项通过）**
 
-- [ ] ① 当前代码库架构总结 → [§1](#-现状架构总结)
-- [ ] ② 与理论模型的主要差距 → [§2](#-与理论模型的主要差距)
-- [ ] ③ 第一阶段必须实现的原则 → [§3](#-第一阶段必须实现的原则)
-- [ ] ④ 可延期项 → [§4](#-可延期项)
-- [ ] ⑤ 建议的核心 domain model → [§5](#-核心-domain-model)
-- [ ] ⑥ 建议的模块边界 → [§6](#-模块边界)
-- [ ] ⑦ 数据流 → [§7](#-数据流)
-- [ ] ⑧ Processor/Resolver/Renderer 边界 → [§8](#-processorresolverrenderer-边界)
-- [ ] ⑨ World 文件模型 → [§9](#-world-文件模型)
-- [ ] ⑩ History/Snapshot 模型 → [§10](#-historysnapshot-模型)
-- [ ] ⑪ Dirty Region/invalidation 模型 → [§11](#-dirty-regioninvalidation-模型)
-- [ ] ⑫ Plugin/semantic/schema 模型 → [§12](#-pluginsemanticschema-模型)
-- [ ] ⑬ 最小 vertical slice → [§13](#-最小-vertical-slice)
-- [ ] ⑭ 分阶段迁移计划 → [§14](#-分阶段迁移计划)
-- [ ] ⑮ 风险和可能的过度设计点 → [§15](#-风险和可能的过度设计点)
-- [ ] ⑯ 测试策略 → [§16](#-测试策略)
-- [ ] ⑰ 第一阶段验收标准 → [§17](#-第一阶段验收标准)
-- [ ] ⑱ charter 批判与更简方案（额外要求） → [§18](#18-charter-批判与更简方案6-评审专用)
-- [ ] 附录 A 选型清单（候选库对比） → [附录 A](#附录-a-选型清单候选库对比)
-- [ ] 附录 B CONTEXT.md 首批词条草案 → [附录 B](#附录-b-contextmd-首批词条草案)
-- [ ] 附录 C ADR 候选清单 → [附录 C](#附录-c-adr-候选清单)
-
-**评审时需要重点拍板的三处**（其余为技术细节，可在评审中顺带确认）：
-
-1. §18 C1 —— Processor 是否允许以「Resolved World 整体」为输入（潜在成环，建议改为槽位级解析）。
-2. §18 C2 —— Lock 与 Freeze 是否合并为单一 `Pin` 意图（影响 Resolver 复杂度与 UI 手势）。
-3. §18 C5 —— Suppression 的对象匹配语义（本项目最高创新风险，§15 R1）。
+| 区块 | 结论 |
+|---|---|
+| ①–⑰（charter 输出要求 17 项） | 逐项通过、无缺项；各节标题即评审锚点（①现状架构总结 … ⑰第一阶段验收标准） |
+| ⑱ charter 批判与更简方案 | C1–C7 全部裁决（结果见 [§18](#18-charter-批判与更简方案6-评审专用) 末尾裁决表） |
+| 附录 A 选型清单 | 通过；技术默认值包一并追认（见 [§19](#19-决议记录spec-lock-2026-10-02)） |
+| 附录 B CONTEXT 词条 | 通过，已落 [CONTEXT.md](../CONTEXT.md) |
+| 附录 C ADR 候选 | 通过，8 条已落 [docs/adr/](adr/) |
+| 审查新增欠定义 G1–G4 | 已补齐（见 [§19](#19-决议记录spec-lock-2026-10-02)） |
 
 ---
 
@@ -161,10 +142,14 @@
 | Capability Resolution（elevation-like scalar field 匹配） | §24 后半 | Phase-1 精确 semantic 匹配已够；模糊匹配引入歧义 | 出现同义语义竞争时 |
 | cost hint 驱动的自动重算 | §32 尾 | 调研三领域一致选择手动/按需触发；自动调度器是复杂度 | 有实测的便宜 Processor 且用户抱怨时 |
 | Collapse/压平（把 N 层合并为一层） | prior-art §4.8（UE 经验） | 第一版 op log 尚小；但操作模型要保证「Collapse = 删若干 op + 落一个 Snapshot」可表达 | 世界文件膨胀时 |
-| 世界文件二进制容器（protobuf/flatbuffers） | §9 | 1024² JSON+base64 量级可接受（约数十 MB） | 文件体积成为真实痛点 |
+| 大型数组的二进制物理编码（blob / protobuf 等） | §9、#6 Q13 | v1 逻辑契约 = JSON envelope；base64 仅 Phase-1 存储编码、**非长期 ABI**；迁移物理编码不得改动逻辑 schema / DataId / lineage / processorGraph / history 语义 | 文件体积成为真实痛点 |
 | bilinear/bicubic 重采样矩阵 | §27 | v1 只需 nearest；接口不泄露底层数组坐标即可 | 视觉质量要求提升时 |
 | 第三方插件沙箱与升级迁移 UI | §48 | 插件同仓、显式升级即可 | 生态出现时 |
 | 操作日志增量压缩 / 快照自动策略调优 | §43 | 先跑通「快照 + 后续 op」即可 | 文件膨胀数据出现 |
+| Suppression 的 temporary 级（临时试对比） | prior-art §4.4、#6 Q10 | Phase-1 只做 persistent；临时试对比用 Undo 或删除意图表达 | 出现真实「临时隐藏做对比」需求 |
+| 约束求解（Constraint 满足） | charter §15、#6 Q9 | Phase-1 只存储与 Conflict 显示，不做求解 | 用户需要系统自动满足「不小于」类约束 |
+| 手工/生成要素的几何去重 | #6 Q12 | Phase-1 不自动去重，重叠在 Conflict/Debug 显示；去重做成显式 Processor 策略 | 出现重复计入的真实困扰 |
+| Brush Recipe（charter §13 的 Forest/Desert 笔刷） | §13、#6 技术默认值 | Recipe = 一组 Authoring Operation 的封装，零模型影响 | Simple/Advanced UI 模式解冻时 |
 
 ---
 
@@ -235,9 +220,11 @@ type UserIntent =
   | { kind: 'override';        target: DataId; attribute?: string; value: unknown; region?: Region }
   | { kind: 'suppress-object'; targetFeature: FeatureId }                       // 对象级抑制
   | { kind: 'suppress-spatial'; target: { type: SpatialType; semantic?: Semantic }; region: Region }
-  | { kind: 'pin'; scope:                                                       // Lock/Freeze 的统一候选形态
+  | { kind: 'pin'; scope:                                                       // Lock/Freeze 合并后的统一形态（#6 Q1）
       | { kind: 'attribute'; target: DataId; attribute: string }
-      | { kind: 'region';    region: Region; semantic?: Semantic } };
+      | { kind: 'region';    region: Region; semantic?: Semantic } }
+  | { kind: 'constraint';      target: DataId; attribute: string
+      op: '>=' | '<=' | '==' | 'in'; value: unknown };                          // Phase-1 只存储 + Conflict 显示（#6 Q9）
 
 // ---------- 创作操作（History 单位） ----------
 type AuthoringOperation =
@@ -303,6 +290,11 @@ interface WorldFile {
 - `Field` 的 `sample`/`query` 是唯一世界访问方式；底层数组坐标不得泄漏为世界语义（§27）。
 - `CacheEntry` 携带 `{worldFormatVersion, engineVersion, pluginContentHash, inputHash}`，不匹配即弃（prior-art §3.2）。
 - `ResolutionDecision` 记录「谁覆盖了谁、依据哪条意图」，是 §38/§53 调试视图的数据源，也是继承/覆盖链失控的解药（prior-art §3.3）。
+- **空间级抑制的作用面**（G1 补齐，#6 Q8）：实现为**作用于 Processor 输入的持久 mask**——该区域真的不生成该类对象，下游看到的是「不存在」的结果（而不是「生成了但被隐藏」）；只掩蔽生成数据，用户手绘要素不受空间抑制影响。
+- **约束意图**（G2 补齐，#6 Q9）：`constraint` 进入模型（charter §15 的 `{tree_density>=0.8}` 由此可表达）；Phase-1 只存储并在 Conflict/Debug 显示，**不做约束求解**，求解延期（§4）。
+- **抑制层级**（G3 补齐，#6 Q10）：Phase-1 只有 persistent 一级；temporary（试对比）级延期（§4）。
+- **共存去重**（G4 补齐，#6 Q12）：手工要素与生成要素都进入下游输入，**不自动去重**；重叠在 Conflict/Debug 显示，去重属显式 Processor 策略，不进核心。
+- **数据身份与歧义**（#6 技术默认值）：每 `(semantic × origin)` 只有一个数据项，作者数据由操作折叠而来；槽位解析遇到多个同语义候选时**报歧义**（Conflict），不自动挑选。
 
 ---
 
@@ -375,13 +367,17 @@ flowchart TD
 
 **优先级（Resolver 的合并规则，§11 §51）**：`Explicit User Override > User-authored Data > Generated Data > Default/Fallback`；同一属性上用户同级冲突 = `latest explicit user intent wins`（§52），但**不是**「插件最后运行就赢」——执行顺序与优先级无关（§51）。
 
+**本次裁决补充的边界**（#6）：空间级抑制落在 **Processor 输入 mask**（真的改变生成与下游结果），不是 Resolver 的事后过滤（Q8）；手工与生成要素重叠时 Resolver **不去重**，只把重叠呈现为 Conflict（Q12）；Processor 失败由状态机（`error`/`blocked`）如实呈现，Resolver 不得用旧值假装成功（Q6）。
+
 **边界自检**：若某段逻辑「看起来属于渲染」（例：材质按优先级混合、沙漠里不画河），它必须落在 Processor 或 Resolver，并留下可查询的决策记录。反面教材：Cities: Skylines II 把材质优先级硬编码进渲染器，导致手绘层只是视觉假象、不参与逻辑（prior-art §1.8、§3.5）。
 
 ---
 
 ## ⑨ World 文件模型
 
-**v1 容器**：JSON 信封 + typed array 以 base64 承载。理由：1024² 单场 f32 = 4MB，切片内场数 ≤ 4、线要素少量，文件约数十 MB 量级可接受；二进制容器（protobuf/flatbuffers/sqlite）列入延期（§4）。世界文件必须能被纯文本 diff 检查到非二进制部分（图、意图、锁、版本）。
+**v1 逻辑契约（长期稳定）**：JSON 信封。下表中「必须」的分区构成 v1 的逻辑文件契约；`DataId`、`lineageId`、`processorGraph`、`history`、`pluginLock` 的**语义**同属契约，任何物理迁移都不得改动它们（#6 Q13）。
+
+**Phase-1 存储编码（非长期 ABI）**：typed array 以 base64 承载。理由：1024² 单场 f32 = 4MB，切片内场数 ≤ 4、线要素少量，文件约数十 MB 量级可接受。日后允许在不改变逻辑 schema / DataId / lineage / processorGraph / history 语义的前提下，把大型数组迁移为**独立 binary blob 或其他物理编码**；base64 只是当前编码选择，不得被下游当作稳定接口依赖。世界文件必须能被纯文本 diff 检查到非二进制部分（图、意图、锁、版本）。
 
 | 分区 | 内容 | 可丢性 | 依据 |
 |---|---|---|---|
@@ -395,7 +391,7 @@ flowchart TD
 
 **迁移**：`worldFormatVersion` 变化走 `migrate(from, to)` 链（v1 尚无历史版本，接口先留）；`engineVersion` 不触发文件迁移。旧世界默认按 `pluginLock` 载入——插件升级必须由用户显式发起 Upgrade/Rebuild（§48）。
 
-**双轨原则**：`processorGraph`（怎么做）与 `generatedCache`（算过什么）分离。缓存永远不是事实来源：世界 = `authored + intents + graph + params + seed + pluginLock`，其余都可重算（§44）。
+**双轨原则**：`processorGraph`（怎么做）与 `generatedCache`（算过什么）分离。缓存永远不是事实来源：世界 = `authored + intents + graph + params + seed + pluginLock`，其余都可重算（§44）。`generated` 与其 `provenance` **持续按可重建 cache 处理，不升级为必备数据**（#6 Q13 边界）——删缓存后谱系由确定性 lineageId 重算再生。
 
 ---
 
@@ -434,7 +430,7 @@ InvalidationPolicy = {
 
 > 流向只依赖 3×3 邻域 ⇒ 编辑区 R 只可能翻转 `R ∪ ∂R` 内格点的流向，记翻转集 D；受影响格点集 = `∪_{c∈D} (old_path⁺(c) ∪ new_path⁺(c))`（每个翻转格的旧下游闭包 ∪ 新下游闭包）。典型 O(|D|×√n)，**最坏 O(n)**（翻分水岭/大平地）⇒ **增量必须有全量重算兜底**；挖出新洼地时填洼受影响范围不严格局部，这是增量路径最麻烦的部分。
 
-**Phase-1 实现选择**：标脏语义第一天做对（纯图遍历、代价 O(受影响集)、Debug 可见）；计算侧直接全量重算（1024² 全管线实测 ~375ms，Worker 内），不阻塞 UI。这不是偷懒：GIS/LEM 在「地形持续变化」场景的主流做法就是全量（prior-art §2.9、#4 调研 §3.2）。路径级 Δ 更新延期（§4）。
+**Phase-1 实现选择**：标脏语义第一天做对（纯图遍历、代价 O(受影响集)、Debug 可见）；计算侧直接全量重算（1024² 全管线实测 ~375ms，Worker 内），不阻塞 UI。这不是偷懒：GIS/LEM 在「地形持续变化」场景的主流做法就是全量（prior-art §2.9、#4 调研 §3.2）。路径级 Δ 更新延期（§4）。空间级抑制以 **Processor 输入 mask** 表达（#6 Q8），被 mask 区域的变化同样进入标脏范围。
 
 **两条可测试性质**（Q4「局部失效是真的」的直接证据）：
 
@@ -599,6 +595,15 @@ InvalidationPolicy = {
 
 - [ ] 1024² Hydrology 全管线 ≤1s（Worker 内）；pointer+累积 ≤150ms；UI 主线程无阻塞。
 
+**本次 Spec Lock 新增验收点（#6 裁决）**
+
+- [ ] 约束（`constraint`）可表达，并在 Conflict/Debug 视图显示；Phase-1 不做求解（Q9）。
+- [ ] 空间级抑制真的阻止生成并影响下游——下游 Processor 看到的是「该对象不存在」（Q8）。
+- [ ] 过期 Suppression 在 Debug 视图显式可见，不静默失效（Q2/Q10）。
+- [ ] 手工与生成要素重叠时无自动去重，重叠在 Conflict/Debug 可见（Q12）。
+- [ ] `error` / `blocked` 在状态栏与 Debug 可见，重算不自动清除（Q6）。
+- [ ] 读取端不依赖 base64 这一具体物理编码：逻辑契约分区（版本头 / pluginLock / graph / history / authored）与编码层可分离（Q13 边界）。
+
 **验收方式**：需求方在本文件逐项勾选 + #12 的 14 步演示；任何未通过项回到对应实施票，不得以「后续优化」名义带过（除非显式移入 §4 延期清单）。
 
 ---
@@ -606,7 +611,7 @@ InvalidationPolicy = {
 ## 18. charter 批判与更简方案（#6 评审专用）
 
 > 本节按 charter「输出要求」末段编写：主动指出架构问题、逻辑冲突与不必要复杂度，并在不破坏核心目标的前提下给出更简单可靠的方案。
-> 按维护者 2026-10-02 拍板（Q2）：**本节只记录建议，不修改 charter 正文**；每条冲突留 #6 HITL 逐条定夺。下文「建议裁决」是给评审者的推荐项，不是已生效决定。
+> 按维护者 2026-10-02 拍板（Q2）：**本节只记录建议，不修改 charter 正文**；每条冲突由 #6 HITL 逐条定夺。**下文各条的「裁决」行即 #6 最终结论（2026-10-02）**，汇总见本节末尾裁决表。
 
 ### C1 「Resolved World 可作为 Processor 输入」存在隐性成环路径（冲突）
 
@@ -614,7 +619,7 @@ InvalidationPolicy = {
 - **问题**：若 Processor 以 Resolved World **整体**为输入，而 Resolved World 又包含该 Processor 的输出（解析后），则图上出现 `Processor → Resolved → 同一 Processor` 的隐性环——与 §25 直接冲突，且环检测无法在声明期发现。
 - **更简方案**：Processor 输入是**槽位级解析出的只读数据项/数据视图**，由 Resolver 在绑定输入时提供（`slot → resolved data view`），而不是把 `ResolvedWorld` 对象当输入。图仍只含 `data → processor → data` 三类边，无环可静态检查；§12 的意图（手绘河进入下游）完全保留——手绘 River 经槽位解析进入 Moisture 的输入视图。
 - **不破坏核心目标**：优先级合并、用户数据进逻辑、Debug 决策记录全部照旧；只是把「Resolved World 作为输入」精确化为「解析后的输入视图」。
-- **建议裁决**：采纳（已在 §5 R3 与 §8 边界表落地为默认设计）。
+- **裁决（#6, 2026-10-02）**：采纳 A —— 落点见本节末尾裁决表。
 
 ### C2 Lock 与 Freeze 语义重叠，Resolver 被迫承载四套合并规则（不必要复杂度）
 
@@ -622,7 +627,7 @@ InvalidationPolicy = {
 - **问题**：`Lock`（属性级「锁定为某值」）与 `Freeze`（区域/语义级「自动结果不得覆盖 Resolved」）在语义上高度重叠：两者都是「把某范围的解析结果钉住」。若 Resolver 为四者各写一套合并/冲突规则，规则交互（Override 与 Freeze 谁先？Freeze 区内的 Suppression 是否生效？）会组合爆炸，且用户心智难以区分。
 - **更简方案**：统一为单一 `Pin` 意图，`scope` 区分 `attribute`（等价 Lock/属性级 Override 锁定）与 `region`（等价 Freeze，可带 semantic 过滤）；Resolver 只需处理 `Override / Suppression / Pin` 三个原语 + 一条优先级链。UI 仍可提供四种手势（锁定属性、冻结区域、冻结语义、允许覆盖），映射到同一模型。
 - **不破坏核心目标**：§39 要求的「指定范围内自动结果不能覆盖最终 Resolved State」由 `pin(region)` 精确表达；§15 的 `lock=true` 由 `pin(attribute)` 表达。
-- **建议裁决**：#6 拍板（若采纳，附录 C 的 ADR 候选一并转为正式 ADR；若不采纳，则需在蓝图中补齐四套规则的交互矩阵）。
+- **裁决（#6, 2026-10-02）**：采纳 A —— 统一为 `Pin`；`docs/adr/0008` 已落。
 
 ### C3 §31 的 Invalidation Policy 枚举缺「确定性上下文」维度（规格缺口）
 
@@ -630,7 +635,7 @@ InvalidationPolicy = {
 - **问题**：调研最强烈的警示——World Machine 官方承认上下文敏感设备（Erosion/Snow）在 tile 与整图模式下结果不同，必须外扩周边一圈再混合（prior-art §1.1、§3.1）。仅声明「Neighborhood(radius)」不足以回答「重算需要多大上下文才能与全图一致」，会导致「局部重算产出从未存在过的世界」。
 - **更简方案**：策略 = `propagation` + `context{padding, seam}`；并把「局部==全图」写成可测试性质 P1（§11、§16），对无法满足的全局汇聚类改用 P2（标脏集一致性）并显式声明降级（§15 R2）。
 - **不破坏核心目标**：核心仍只调用策略、不理解算法（§31 原意）；新增的只是一个声明字段与一条测试性质。
-- **建议裁决**：采纳（已在 §11 落地）。
+- **裁决（#6, 2026-10-02）**：采纳 A —— 落点见本节末尾裁决表。
 
 ### C4 §29 的 tile 化假设与 Q4 的第一阶段规模存在执行矛盾（逻辑张力）
 
@@ -638,7 +643,7 @@ InvalidationPolicy = {
 - **问题**：照 §29 字面在第一阶段建多 tile 存储 + 多分辨率金字塔，是典型的「未来假设问题」；但完全不做 tile 抽象又会违反 Q4「接口第一天进核心」。
 - **更简方案**：**tile 接口 day-1，单 tile 实例化**——`Field` 自带 `tileSize` 与 tile 寻址 API，Phase-1 世界中恰好只有一个 tile；多 tile 调度、金字塔、缓存淘汰延期（§4）。局部失效的真实性由 P1/P2 与「编辑期只标脏」验证，不依赖 tile 数量。
 - **不破坏核心目标**：§30 Dirty Region 与 §29 的抽象都被保留；只是推迟了缩放实现。
-- **建议裁决**：采纳（已在 §11 落地）。
+- **裁决（#6, 2026-10-02）**：采纳 A —— 落点见本节末尾裁决表。
 
 ### C5 Suppression 的对象身份跨 Rebuild 稳定性未定义（最高风险缺口）
 
@@ -646,7 +651,7 @@ InvalidationPolicy = {
 - **问题**：`#27` 这个身份如何在重新生成后保持稳定，charter 未定义。上游编辑（改 elevation、调阈值）导致生成结果合并/分裂/重排后：抑制要么错杀新对象，要么静默失效让用户看到「删了又回来」——正是 §20 想避免的结果。调研也指出没有任何被调研系统完整做过这条链（prior-art §0、§4.10）。
 - **更简方案**：① **身份** = `lineageId`（由 processor + params + seed + 输入 hash 决定，同输入再现同 id）；② **匹配** = 精确 lineageId；③ 上游变化导致 id 消失时，该抑制标记为「已过期」并在 Debug/Conflict 视图**显式可见**，不静默丢弃、不模糊几何匹配；④ 鼓励使用**空间级抑制**（不依赖身份）作为更稳的默认语义。
 - **不破坏核心目标**：§20 的「删掉就不该自动回来」在身份稳定时严格成立；身份不稳定时系统如实告知用户，而不是假装成功。
-- **建议裁决**：#6 拍板（这直接决定实现票 #10 的验收用例）。
+- **裁决（#6, 2026-10-02）**：采纳 A —— lineageId 精确匹配 + 过期显式可见；该语义直接决定实现票 #10 的验收用例。
 
 ### C6 Processor 失败/非法输出模型缺失（规格缺口）
 
@@ -654,7 +659,7 @@ InvalidationPolicy = {
 - **问题**：无失败模型时，最可能的实现是「用上一次结果假装成功」或「静默空白」——前者让用户的世界撒谎，后者让人失去信任（prior-art §3.4 明确点名静默传播是坑）。
 - **更简方案**：数据项状态机 `current / partially-outdated / outdated / blocked / error`（§5 R5、§11）；Processor 失败 → 输出 `error`、下游 `blocked`、Conflict/Debug 如实显示；重建时 `error` 不自动清除。
 - **不破坏核心目标**：只是给已有状态概念（§32 的 outdated）补全失败分支。
-- **建议裁决**：采纳（已在 §11/§12 落地）。
+- **裁决（#6, 2026-10-02）**：采纳 A —— 落点见本节末尾裁决表。
 
 ### C7 §32 尾部的 cost hint 自动重算在第一阶段无必要（可延期复杂度）
 
@@ -662,9 +667,75 @@ InvalidationPolicy = {
 - **问题**：调研显示 World Machine / QGIS / Houdini 三个不同领域一致选择「不做自动全量重算」（prior-art §2.10、§3.7）。在第一阶段引入自动触发，会把「谁在什么时候重算」变成隐式行为，与 §32 主句「默认 Outdated + Rebuild」冲突，也增加调试难度。
 - **更简方案**：`costHint` 字段保留在声明里（零成本），但**不驱动任何自动重算**；Phase-1 只有显式 Rebuild。是否启用自动重算留到出现实测便宜 Processor 且用户抱怨时（§4）。
 - **不破坏核心目标**：§32 主句被更严格地执行；未来启用不需要改接口。
-- **建议裁决**：采纳（已在 §4/§5 落地）。
+- **裁决（#6, 2026-10-02）**：采纳 A —— 落点见本节末尾裁决表。
 
-**本节小结**：C1/C3/C4/C6/C7 属「精确化/补齐」，不改变 charter 语义，已作为蓝图默认设计落地；**C2（Lock/Freeze 合并）与 C5（Suppression 身份语义）是需要人拍板的实质选择**，请 #6 优先裁决。以上均不修改 charter 正文。
+**C1–C7 裁决结果（2026-10-02，Spec Lock #6）**
+
+| 条目 | 裁决 | 落点 |
+|---|---|---|
+| C1 Processor 输入形态（防成环） | 采纳 A：槽位级解析视图 | §5 R3、§8、[ADR-0003](adr/0003-processor-inputs-are-slot-resolved-views.md) |
+| C2 Lock/Freeze 语义重叠 | 采纳 A：合并为单一 `Pin` | §5、[CONTEXT.md](../CONTEXT.md)、[ADR-0008](adr/0008-unify-lock-and-freeze-into-pin.md) |
+| C3 Invalidation Policy 缺上下文维度 | 采纳 A：`context{padding, seam}` + 「局部==全图」性质化 | §11、§16、[ADR-0004](adr/0004-invalidation-policy-carries-deterministic-context.md) |
+| C4 tile 化与 Phase-1 规模的张力 | 采纳 A：接口 day-1 + 单 tile 实例化 | §11、[ADR-0007](adr/0007-single-tile-world-instantiation.md) |
+| C5 Suppression 对象身份 | 采纳 A：lineageId 精确匹配 + 过期显式可见 | §5、§11、[ADR-0006](adr/0006-suppression-matching-by-lineage-id.md) |
+| C6 Processor 失败模型缺失 | 采纳 A：五态状态机，`error`/`blocked` 显式 | §5、§11、§17 |
+| C7 costHint 自动重算 | 采纳 A：字段保留、Phase-1 不驱动自动重算 | §4、§5 |
+
+**小结**：C1/C3/C4/C6/C7 属「精确化 / 补齐」，不改变 charter 语义；C2/C5 是实质模型选择，已按上表裁决。**全程未修改 charter 正文**——所有补充与偏离只落在蓝图、`CONTEXT.md` 与 ADR。
+
+---
+
+## 19. 决议记录（Spec Lock 2026-10-02）
+
+> 由 [Spec Lock 评审 #6](https://github.com/XLBen/map-mapmap/issues/6)（HITL，需求方逐项回复）产生。所有条目均为**已锁定**；实现票以本记录 + 蓝图正文 + `CONTEXT.md` + ADR 为准。
+
+### 19.1 裁决表（Q1–Q15）
+
+| # | 决策点 | 裁决 | 落点 |
+|---|---|---|---|
+| Q1 | Lock/Freeze 合并为单一 `Pin` | **采纳 A** | ADR-0008、CONTEXT「Pin」 |
+| Q2 | Suppression 匹配 = lineageId 精确 + 过期显式可见 | **采纳 A** | ADR-0006、§5、§11 |
+| Q3 | Processor 输入 = 槽位级解析视图 | **采纳 A** | ADR-0003、§5 R3、§8 |
+| Q4 | InvalidationPolicy 增 `context{padding,seam}` + 「局部==全图」性质化 | **采纳 A** | ADR-0004、§11、§16 |
+| Q5 | tile 接口 day-1 + 单 tile 实例化 | **采纳 A** | ADR-0007、§11 |
+| Q6 | 五态状态机（`error`/`blocked` 显式） | **采纳 A** | §5、§11、§17 验收点 |
+| Q7 | `costHint` 不驱动自动重算 | **采纳 A** | §4、§5 |
+| Q8 | 空间级抑制 = Processor 输入 mask（只掩蔽生成数据） | **采纳 A** | §5、§8、§11、§17 验收点 |
+| Q9 | `constraint` 进模型、只存储与 Conflict 显示 | **采纳 A** | §5、CONTEXT「Constraint」 |
+| Q10 | 只做 persistent 抑制，temporary 延期 | **采纳 A** | §4、§5 |
+| Q11 | Undo = append-only + `disable` 标记 | **采纳 A** | §10 |
+| Q12 | 手工/生成要素不自动去重 | **采纳 A** | §5、§8、§17 验收点 |
+| Q13 | 世界文件 v1 = JSON 逻辑契约 + base64 存储编码 | **采纳 A + 边界**（见 19.2） | ADR-0002、§4、§9 |
+| Q14 | Phase-1 范围 / 延期清单 / 验收标准整体追认 | **采纳 A** | §4、§17 |
+| Q15 | 首批 ADR 8 条 + CONTEXT 词条全落 | **采纳 A** | [CONTEXT.md](../CONTEXT.md)、[docs/adr/](adr/) |
+
+### 19.2 Q13 的边界（决议原文）
+
+- JSON envelope 是 **v1 的逻辑文件契约**；
+- base64 typed array 只是 **Phase-1 的 storage encoding，不视为长期稳定 ABI**；
+- 后续允许在**不改变逻辑 schema / DataId / lineage / processorGraph / history 语义**的前提下，把大型数组迁移为独立 binary blob 或其他物理编码；
+- `generated` + `provenance` 继续按**可重建 cache** 处理，不升级为必备数据。
+
+### 19.3 技术默认值包（追认，即日生效）
+
+pnpm workspaces；vitest + fast-check；手写 typed-array 算法（不引 GIS 原生库）；手写 Worker 协议（单 Worker + 单在途请求 + 过期结果丢弃）；原生 Canvas2D；自建最小 store（`useSyncExternalStore`）；不引 zod（TS 类型 + 手写运行时守卫）；自写 DAG；不引投影 / 几何库；semantic 精确字符串匹配；单位只记录不校验；Brush Recipe 延期；每 `(semantic × origin)` 单一数据项；槽位多候选报歧义。
+
+### 19.4 本次补齐的欠定义（G1–G4）
+
+| 编号 | 补齐内容 | 落点 |
+|---|---|---|
+| G1 | 空间级抑制 = Processor 输入 mask（阻止生成、影响下游、只掩蔽生成数据） | §5、§8、§11、§17 |
+| G2 | `constraint` 进模型（只存储 + Conflict 显示，不求解） | §5、CONTEXT |
+| G3 | 抑制只有 persistent 一级，temporary 延期 | §4、§5 |
+| G4 | 手工 / 生成要素不自动去重，重叠呈现为 Conflict | §5、§8、§17 |
+
+### 19.5 非 ADR 决策的归属
+
+Q6（失败状态机）、Q8（空间抑制作用面）、Q9（约束意图）、Q10（抑制层级）、Q11（Undo 表示）、Q12（去重语义）以及 19.3 的技术默认值，记录于本文件正文与 `CONTEXT.md`；若日后出现真实争议，可再提升为 ADR（届时从 0009 起编号）。
+
+### 19.6 闸门
+
+本记录落地即视为 **Spec Lock 通过**：[#6](https://github.com/XLBen/map-mapmap/issues/6) 关闭，Phase B（#7–#12）解除 #6 阻塞。**解除阻塞 ≠ 同时开工**：各实现票仍按其自身依赖顺序（#7 →（#8 ∥ #9）→ #10 → #11 → #12）与各自的 triage / 执行流程推进。
 
 ---
 
@@ -691,7 +762,7 @@ InvalidationPolicy = {
 
 ## 附录 B CONTEXT.md 首批词条草案
 
-> 本附录是**草案**，供 #6 Spec Lock 评审时裁定并落地为 `CONTEXT.md`（懒创建：本文件不提前创建）。词条只写语言与边界，不写实现。
+> 本附录是 [CONTEXT.md](../CONTEXT.md) 的成文依据；词条已于 2026-10-02 随 Spec Lock 落地到仓库根目录 `CONTEXT.md`（本附录保留为评审记录）。词条只写语言与边界，不写实现。
 
 | 词条 | 定义 | 不是什么 |
 |---|---|---|
@@ -700,11 +771,12 @@ InvalidationPolicy = {
 | Authored Data（作者数据） | 用户明确输入/绘制的数据 | 不是派生结果，不是渲染覆盖 |
 | Generated Data（生成数据） | Processor 依据输入自动计算的数据，携带谱系 | 不是用户画的东西，不是缓存本身 |
 | Resolved World（解析世界） | 依据优先级合并事实与意图后的世界状态，供渲染与读取 | 不是原始生成数据，不是唯一事实来源 |
-| User Intent（用户意图） | 用户对世界表达的持久、非破坏的意愿（覆盖/抑制/钉定） | 不是一次性命令，不是插件行为 |
+| User Intent（用户意图） | 用户对世界表达的持久、非破坏的意愿（覆盖 / 抑制 / 钉定 / 约束） | 不是一次性命令，不是插件行为 |
 | Authoring Operation（创作操作） | 用户创作行为的最小记录单位，可撤销、可重放 | 不是渲染帧，不是文件写入 |
 | Override（覆盖） | 用户指定某属性/区域取特定值，优先于自动结果 | 不是修改生成算法 |
 | Suppression（抑制） | 让生成结果在解析中不可见的持久意图（对象级/空间级） | 不是删除生成数据 |
-| Pin（钉定，Lock/Freeze 候选合并项） | 把某属性或区域的结果钉住，自动结果不得覆盖 | 不是 Suppression（对象仍存在），不是 Override（不指定新值） |
+| Pin（钉定；Lock 与 Freeze 合并后的统一术语） | 把某属性或区域的结果钉住，自动结果不得覆盖 | 不是 Suppression（对象仍存在），不是 Override（不指定新值） |
+| Constraint（约束） | 用户对某属性取值范围的意愿；世界可以因其他意图而不满足它（届时显示为 Conflict） | 不是 Override（不指定具体值），不是校验规则（不自动拒绝写入） |
 | Processor（处理器） | `Data → Data` 的纯函数：读取输入，产出新数据 | 不是渲染器，不是就地修改工具 |
 | Processor Graph（处理器图） | Processor 与其输入输出数据的有向无环连接 | 不是执行顺序列表，不是 UI 节点面板 |
 | Invalidation Policy（失效策略） | 数据变化时受影响范围如何传播的声明 | 不是重算调度，不是性能开关 |
@@ -726,19 +798,19 @@ InvalidationPolicy = {
 
 ## 附录 C ADR 候选清单
 
-> 候选清单，供 #6 评审时挑选并写成正式 ADR（懒创建 `docs/adr/`）。每条标注是否通过「难逆 + 意外 + 真权衡」三问。
+> 8 条候选已于 2026-10-02 全部落为正式 ADR（见 [docs/adr/](adr/)）；本附录保留为选目记录与「难逆 + 意外 + 真权衡」三问检验依据。
 
-| 候选 | 决定内容 | 三问检验 | 状态 |
+| 候选 | 决定内容 | 三问检验 | 落点 |
 |---|---|---|---|
-| ADR-0001 | 采用 pull 式求值 + Outdated/手动 Rebuild，第一版不引入后台调度器 | 难逆（影响全部求值路径）/ 意外（直觉会想自动重算）/ 真权衡（vs 自动重算的响应性） | 候选 |
-| ADR-0002 | World 文件 v1 = JSON 信封 + base64 typed arrays；Generated Cache 可弃、带版本与 hash | 难逆（格式要迁移）/ 意外（为何不直接二进制）/ 真权衡（可读可 diff vs 体积） | 候选 |
-| ADR-0003 | Processor 输入 = 按槽位解析的数据视图，禁止以 Resolved World 整体为输入 | 难逆（图模型基础）/ 意外（charter §56 允许作输入）/ 真权衡（防环 vs 表达便利） | 候选（依赖 C1 裁决） |
-| ADR-0004 | Invalidation Policy 含 `context{padding, seam}`，「局部==全图」作为可测试性质 | 难逆（策略接口）/ 意外（WM 承认局部≠全图）/ 真权衡（正确性 vs 局部性能） | 候选（依赖 C3） |
-| ADR-0005 | Phase-1 Hydrology = D8 + Priority-Flood 全量重算 + Downstream 标脏；路径级 Δ 延期 | 难逆（性能路线）/ 意外（明明做了标脏却全量算）/ 真权衡（复杂度与风险 vs 增量收益） | 候选 |
-| ADR-0006 | Suppression 匹配 = lineageId 精确匹配，过期抑制显式可见，不模糊几何匹配 | 难逆（用户数据的持久语义）/ 意外（用户以为按位置匹配）/ 真权衡（稳定 vs 灵活） | 候选（依赖 C5 裁决） |
-| ADR-0007 | Phase-1 单 tile 实例化整个世界，tile/LOD 接口 day-1 进核心 | 难逆（存储层结构）/ 意外（charter 假设 16384²）/ 真权衡（Q4 接口先行 vs 避免金字塔过度设计） | 候选（依赖 C4） |
-| ADR-0008 | 统一 Lock/Freeze 为单一 `Pin` 意图（三个合并原语） | 难逆（意图模型与 UI 映射）/ 意外（charter 列了四类 Intent）/ 真权衡（规则组合爆炸 vs 概念齐全） | 候选（依赖 C2 裁决） |
+| ADR-0001 | 采用 pull 式求值 + Outdated/手动 Rebuild，第一版不引入后台调度器 | 难逆（影响全部求值路径）/ 意外（直觉会想自动重算）/ 真权衡（vs 自动重算的响应性） | [0001-pull-evaluation-with-manual-rebuild](adr/0001-pull-evaluation-with-manual-rebuild.md) |
+| ADR-0002 | World 文件 v1 = JSON 逻辑契约 + base64 存储编码（非长期 ABI）；Generated Cache 可弃、带版本与 hash | 难逆（格式要迁移）/ 意外（为何不直接二进制）/ 真权衡（可读可 diff vs 体积） | [0002-world-file-json-envelope-and-physical-encoding](adr/0002-world-file-json-envelope-and-physical-encoding.md) |
+| ADR-0003 | Processor 输入 = 按槽位解析的数据视图，禁止以 Resolved World 整体为输入 | 难逆（图模型基础）/ 意外（charter §56 允许作输入）/ 真权衡（防环 vs 表达便利） | [0003-processor-inputs-are-slot-resolved-views](adr/0003-processor-inputs-are-slot-resolved-views.md) |
+| ADR-0004 | Invalidation Policy 含 `context{padding, seam}`，「局部==全图」作为可测试性质 | 难逆（策略接口）/ 意外（WM 承认局部≠全图）/ 真权衡（正确性 vs 局部性能） | [0004-invalidation-policy-carries-deterministic-context](adr/0004-invalidation-policy-carries-deterministic-context.md) |
+| ADR-0005 | Phase-1 Hydrology = D8 + Priority-Flood 全量重算 + Downstream 标脏；路径级 Δ 延期 | 难逆（性能路线）/ 意外（明明做了标脏却全量算）/ 真权衡（复杂度与风险 vs 增量收益） | [0005-phase1-hydrology-d8-full-recompute](adr/0005-phase1-hydrology-d8-full-recompute.md) |
+| ADR-0006 | Suppression 匹配 = lineageId 精确匹配，过期抑制显式可见，不模糊几何匹配 | 难逆（用户数据的持久语义）/ 意外（用户以为按位置匹配）/ 真权衡（稳定 vs 灵活） | [0006-suppression-matching-by-lineage-id](adr/0006-suppression-matching-by-lineage-id.md) |
+| ADR-0007 | Phase-1 单 tile 实例化整个世界，tile/LOD 接口 day-1 进核心 | 难逆（存储层结构）/ 意外（charter 假设 16384²）/ 真权衡（Q4 接口先行 vs 避免金字塔过度设计） | [0007-single-tile-world-instantiation](adr/0007-single-tile-world-instantiation.md) |
+| ADR-0008 | 统一 Lock/Freeze 为单一 `Pin` 意图（三个合并原语） | 难逆（意图模型与 UI 映射）/ 意外（charter 列了四类 Intent）/ 真权衡（规则组合爆炸 vs 概念齐全） | [0008-unify-lock-and-freeze-into-pin](adr/0008-unify-lock-and-freeze-into-pin.md) |
 
 ---
 
-*本文档为草案：①–⑰ 与 §18 均待 #6 逐项评审锁定；锁定前不得进入 Phase B 实现（Q1 强制 checkpoint）。*
+*本文档为 **locked spec**：Spec Lock 于 2026-10-02 经 [#6](https://github.com/XLBen/map-mapmap/issues/6) 逐项通过，裁决见 [§19](#19-决议记录spec-lock-2026-10-02)。Phase B（#7–#12）据此实施；对本文档的实质修改需与需求方确认，重大改动应记入新 ADR 或 §19。*
