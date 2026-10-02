@@ -25,7 +25,7 @@ export interface PolygonFeature extends FeatureBase {
 
 export type Feature = PointFeature | LineFeature | PolygonFeature;
 
-function bboxOf(f: Feature): Region {
+export function bboxOf(f: Feature): Region {
   const pts =
     f.kind === 'point' ? [f.pos] : f.kind === 'line' ? f.points : f.ring;
   if (pts.length === 0) throw new Error(`空几何: ${f.id}`);

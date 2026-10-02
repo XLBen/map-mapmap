@@ -7,3 +7,4 @@ export * from './serialize';
 export * from './authoring';
 export * from './processor';
 export * from './engine';
+export * from './resolver';

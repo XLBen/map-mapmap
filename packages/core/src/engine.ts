@@ -1,11 +1,13 @@
 import { Field } from './field';
-import type { FeatureSet } from './feature';
+import { FeatureSet, bboxOf } from './feature';
 import type { Region } from './coords';
 import type { World } from './authoring';
 import type { DataId } from './spatial';
 import type { DataStatus, PortSpec, ProcessorDef } from './processor';
 import { radiusOf } from './processor';
 import type { SpatialData } from './spatial';
+import type { IntentOp, LogOp } from './authoring';
+import { Resolver } from './resolver';
 
 export interface GeneratedEntry {
   dataId: DataId;
@@ -50,6 +52,8 @@ function subtractRect(a: Region, b: Region): Region[] {
  */
 export class Engine {
   readonly world: World;
+  /** Resolver 与引擎共享同一套槽位语义（charter 55/56）。 */
+  readonly resolver: Resolver;
   #processors = new Map<string, ProcessorDef>();
   #instances = new Map<string, Instance>();
   #generated = new Map<string, GeneratedEntry>();
@@ -57,11 +61,18 @@ export class Engine {
 
   constructor(world: World) {
     this.world = world;
+    this.resolver = new Resolver(world, this);
   }
 
   registerProcessor(def: ProcessorDef): void {
     if (this.#processors.has(def.id)) throw new Error(`Processor 已注册: ${def.id}`);
     this.#processors.set(def.id, def);
+  }
+
+  processorOf(instanceId: string): ProcessorDef {
+    const inst = this.#instances.get(instanceId);
+    if (!inst) throw new Error(`实例不存在: ${instanceId}`);
+    return this.#processors.get(inst.processorId)!;
   }
 
   // ---- DAG（charter 24/25）----
@@ -101,13 +112,20 @@ export class Engine {
     return this.#outputs.get(instanceId);
   }
 
-  /** 世界作者数据变更 → 传播失效到所有下游（Dirty Region 真实传播，charter 31）。 */
+  /** 世界作者数据变更或新增意图 → 传播失效到所有下游（Dirty Region 真实传播，charter 31）。 */
   sync(): void {
-    const dirt = this.world.drainDirtyEntries();    const frontier: Array<{ semantic: string; region?: Region }> = [];
-    for (const d of dirt) {
+    const frontier: Array<{ semantic: string; region?: Region }> = [];
+    for (const d of this.world.drainDirtyEntries()) {
       const s = this.#semanticOf(d.dataId);
       if (!s) continue;
       for (const r of d.regions) frontier.push({ semantic: s, region: r });
+    }
+    // 意图与意图标记（override/pin/suppress/removeIntent/undo）= 用户可见变化 → 相应 semantic 整域待重算
+    for (const e of this.world.log) {
+      if (e.seq <= this.#lastSeenSeq) continue;
+      this.#lastSeenSeq = e.seq;
+      const s = this.#intentSemantic(e.op);
+      if (s) frontier.push({ semantic: s, region: undefined });
     }
     while (frontier.length) {
       const cur = frontier.shift()!;
@@ -155,7 +173,24 @@ export class Engine {
         entry.status = 'blocked';
         continue;
       }
-      if (def.output.kind !== 'field') throw new Error('#9 仅支持 field 输出（feature 输出随 #11）');
+
+      const clip = opts?.region;
+      if (def.output.kind === 'feature') {
+        // Phase B v0：feature 输出全量重建（区域级增量随 #11 水文链落地）
+        const extent = this.#extentFor(iid);
+        if (!extent) continue;
+        const region = clip ? (intersect(extent, clip) ?? extent) : extent;
+        const fs = this.world.registry.createFeatureSet(def.output.semantic);
+        const produced = def.run(inputs, inst.params, { region, write: () => {} });
+        if (produced) {
+          for (const f of produced.features.all()) fs.add(f);
+        }
+        this.#outputs.set(iid, fs);
+        entry.pending = clip ? entry.pending.flatMap((r) => subtractRect(r, clip)) : [];
+        entry.status = entry.pending.length ? 'partially-outdated' : 'current';
+        continue;
+      }
+      if (def.output.kind !== 'field') throw new Error(`未知输出类型: ${(def.output as { kind: string }).kind}`);
 
       let out = this.#outputs.get(iid) as Field | undefined;
       if (!out) {
@@ -163,8 +198,6 @@ export class Engine {
         this.#outputs.set(iid, out);
       }
 
-      let clip: Region | undefined;
-      if (opts?.region) clip = opts.region;
       let targets = entry.pending.length ? entry.pending : [out.bounds];
       if (clip) {
         targets = targets
@@ -190,6 +223,40 @@ export class Engine {
   }
 
   // ---- 内部 ----
+  #lastSeenSeq = 0;
+
+  #intentSemantic(op: LogOp): string | undefined {
+    switch (op.kind) {
+      case 'override':
+        return this.#semanticOfDataId(op.dataId);
+      case 'pin':
+        return 'target' in op.scope ? this.#semanticOfDataId(op.scope.target) : op.scope.semantic;
+      case 'suppress':
+      case 'suppressSpatial':
+        return op.semantic ?? undefined;
+      case 'removeIntent':
+      case 'disable':
+      case 'enable': {
+        const t = this.world.log.find((e) => e.opId === op.targetOpId);
+        return t ? this.#intentSemantic(t.op) : undefined;
+      }
+      default:
+        return undefined; // 作者数据操作由标脏通道负责，避免双重失效
+    }
+  }
+
+  #semanticOfDataId(id: DataId): string | undefined {
+    if (id.startsWith('gen:')) {
+      try {
+        return this.processorOf(id.slice(4)).output.semantic;
+      } catch {
+        return undefined;
+      }
+    }
+    const d = this.world.data(id);
+    return d ? (d instanceof Field ? d.def.semantic : d.semantic) : undefined;
+  }
+
   #semanticOf(dataId: DataId): string | undefined {
     const d = this.world.data(dataId);
     if (!d) return undefined;
@@ -197,38 +264,114 @@ export class Engine {
   }
 
   #resolveInput(port: PortSpec): Field | FeatureSet | undefined {
-    const candidates: Array<{ data: Field | FeatureSet; fromGenerated: boolean }> = [];
+    if (port.semantic !== undefined) {
+      // 槽位解析走 Resolver：authored > generated（charter 51，禁 last-run-wins）+ 空间抑制 mask（Q8）
+      const picked = this.resolver.pickBase(port.semantic);
+      if (!picked) return undefined;
+      return this.#maskSpatial(port.semantic, picked.data);
+    }
+    const candidates: Array<{ data: Field | FeatureSet }> = [];
     for (const id of this.world.dataIds()) {
       const d = this.world.data(id);
       if (!d) continue;
       const s = d instanceof Field ? d.def.semantic : d.semantic;
-      if (this.#portMatches(port, d, s)) candidates.push({ data: d, fromGenerated: false });
-    }
-    for (const def of this.#processors.values()) {
-      if (def.output.semantic !== port.semantic) continue;
-      for (const inst of this.#instances.values()) {
-        if (this.#processors.get(inst.processorId) !== def) continue;
-        const d = this.#outputs.get(inst.instanceId);
-        if (d) candidates.push({ data: d, fromGenerated: true });
+      const kindOk = port.kind === 'field' ? d instanceof Field : d instanceof FeatureSet;
+      if (!kindOk) continue;
+      if (port.capability !== undefined && !this.world.registry.hasCapabilities(s, [port.capability])) continue;
+      if (port.dataType !== undefined) {
+        const shape = d instanceof Field ? d.def.kind : d.kind;
+        if (shape !== port.dataType) continue;
       }
+      candidates.push({ data: d });
+    }
+    for (const inst of this.#instances.values()) {
+      const def = this.#processors.get(inst.processorId)!;
+      if (!this.#portMatchesOutput(def, port)) continue;
+      const d = this.#outputs.get(inst.instanceId);
+      if (d) candidates.push({ data: d });
     }
     if (candidates.length === 0) return undefined;
-    if (candidates.length > 1) throw new Error(`输入歧义（semantic=${port.semantic ?? ''}，${candidates.length} 个候选）`);
+    if (candidates.length > 1) throw new Error(`输入歧义（capability=${port.capability ?? ''}，${candidates.length} 个候选）`);
     return candidates[0].data;
   }
 
-  #portMatches(port: PortSpec, d: Field | FeatureSet, semantic: string): boolean {
-    if (port.kind === 'field' && !(d instanceof Field)) return false;
-    if (port.kind === 'feature' && d instanceof Field) return false;
-    if (port.semantic !== undefined && semantic !== port.semantic) return false;
+  #portMatchesOutput(def: ProcessorDef, port: PortSpec): boolean {
+    if (def.output.semantic !== port.semantic && port.capability === undefined) return false;
     if (port.capability !== undefined) {
-      if (!this.world.registry.hasCapabilities(semantic, [port.capability])) return false;
+      if (!this.world.registry.hasCapabilities(def.output.semantic, [port.capability])) return false;
     }
-    if (port.dataType !== undefined) {
-      const shape = d instanceof Field ? d.def.kind : d.kind;
-      if (shape !== port.dataType) return false;
-    }
+    if (port.kind !== def.output.kind) return false;
     return true;
+  }
+
+  /** 空间级抑制（Q8）：Processor 输入 mask——只掩蔽数据副本，输入本体不动（charter 21）。 */
+  #maskSpatial(semantic: string, data: Field | FeatureSet): Field | FeatureSet {
+    const masks = this.world.intents().filter(
+      (o): o is IntentOp & { kind: 'suppressSpatial' } =>
+        o.kind === 'suppressSpatial' && (o.semantic === undefined || o.semantic === semantic),
+    );
+    if (!masks.length) return data;
+    const kind = data instanceof Field ? 'field' : data.kind;
+    const regions = masks.filter((o) => o.spatialType === kind).map((o) => o.region);
+    if (!regions.length) return data;
+
+    if (data instanceof Field) {
+      const copy = this.#cloneFieldForMask(data);
+      const d = data.def;
+      const span = d.tileSize * d.resolution;
+      const res = d.resolution;
+      for (const { tx, ty } of data.tileList) {
+        const extent = {
+          minX: d.origin.x + tx * span,
+          minY: d.origin.y + ty * span,
+          maxX: d.origin.x + (tx + 1) * span,
+          maxY: d.origin.y + (ty + 1) * span,
+        };
+        const hit = regions.some((r) => r.minX < extent.maxX && extent.minX < r.maxX && r.minY < extent.maxY && extent.minY < r.maxY);
+        if (!hit) continue;
+        const cur = data.getTile(tx, ty);
+        if (!cur) continue;
+        const arr = cur.slice();
+        const nx = Math.round((extent.maxX - extent.minX) / res);
+        const ny = Math.round((extent.maxY - extent.minY) / res);
+        for (let iy = 0; iy < ny; iy++) {
+          for (let ix = 0; ix < nx; ix++) {
+            const x = extent.minX + ix * res;
+            const y = extent.minY + iy * res;
+            if (regions.some((r) => x >= r.minX && x < r.maxX && y >= r.minY && y < r.maxY)) {
+              arr[iy * d.tileSize + ix] = d.nodata;
+            }
+          }
+        }
+        copy.setTile(tx, ty, arr);
+      }
+      return copy;
+    }
+    const fs = this.world.registry.createFeatureSet(semantic);
+    for (const f of data.all()) {
+      const b = bboxOf(f);
+      if (!regions.some((r) => r.minX < b.maxX && b.minX < r.maxX && r.minY < b.maxY && b.minY < r.maxY)) fs.add(f);
+    }
+    return fs;
+  }
+
+  #cloneFieldForMask(src: Field): Field {
+    const d = src.def;
+    const out = this.world.registry.createField(d.semantic, {
+      width: d.width,
+      height: d.height,
+      origin: d.origin,
+      resolution: d.resolution,
+      tileSize: d.tileSize,
+      lodLevels: d.lodLevels,
+      nodata: d.nodata,
+      fill: () => d.nodata,
+    });
+    for (const { tx, ty } of src.tileList) {
+      const t = src.getTile(tx, ty);
+      if (t) out.setTile(tx, ty, t);
+    }
+    return out;
   }
 
   #extentFor(instanceId: string): Region | undefined {
