@@ -57,6 +57,20 @@ export class FeatureSet {
     return this.#features.length;
   }
 
+  /** 全集包围盒（空集合返回空区域标记：maxX<minX）。 */
+  get bounds(): Region {
+    if (!this.#features.length) return { minX: 0, minY: 0, maxX: -1, maxY: -1 };
+    let { minX, minY, maxX, maxY } = bboxOf(this.#features[0]);
+    for (const f of this.#features.slice(1)) {
+      const b = bboxOf(f);
+      if (b.minX < minX) minX = b.minX;
+      if (b.minY < minY) minY = b.minY;
+      if (b.maxX > maxX) maxX = b.maxX;
+      if (b.maxY > maxY) maxY = b.maxY;
+    }
+    return { minX, minY, maxX, maxY };
+  }
+
   all(): readonly Feature[] {
     return this.#features;
   }

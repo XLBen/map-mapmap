@@ -126,7 +126,7 @@ export class World {
   #seq = 0;
   #undoStack: OpId[] = [];
   #redoStack: OpId[] = [];
-  #dirty = new Set<DataId>();
+  #dirty = new Map<DataId, (Region | undefined)[]>();
 
   constructor(registry: SemanticRegistry, opts?: { snapshotInterval?: number }) {
     this.registry = registry;
@@ -156,13 +156,31 @@ export class World {
 
   /** charter 42：撤销/重做只把受影响数据标脏，派生结果不倒推。 */
   get dirty(): readonly DataId[] {
-    return [...this.#dirty];
+    return [...this.#dirty.keys()];
+  }
+
+  /** 区域级标脏（引擎传播用）；region undefined = 全域。 */
+  dirtyEntries(): Array<{ dataId: DataId; regions: (Region | undefined)[] }> {
+    return [...this.#dirty].map(([dataId, regions]) => ({ dataId, regions: [...regions] }));
   }
 
   drainDirty(): DataId[] {
-    const out = [...this.#dirty];
+    const out = [...this.#dirty.keys()];
     this.#dirty.clear();
     return out;
+  }
+
+  /** 取走并清空区域级标脏（引擎 sync 用）。 */
+  drainDirtyEntries(): Array<{ dataId: DataId; regions: (Region | undefined)[] }> {
+    const out = this.dirtyEntries();
+    this.#dirty.clear();
+    return out;
+  }
+
+  #markDirty(id: DataId, region?: Region): void {
+    const arr = this.#dirty.get(id) ?? [];
+    arr.push(region);
+    this.#dirty.set(id, arr);
   }
 
   /** 有效意图（seq 序）。同属性 latest-explicit-wins 由 Resolver 取末项（charter 52）。 */
@@ -229,7 +247,8 @@ export class World {
     if (!opId) return undefined;
     this.#redoStack.push(opId);
     this.#append({ kind: 'disable', targetOpId: opId }, { recordUndo: false });
-    this.#markDirtyIfAuthored(opId);
+    const entry = this.#log.find((e) => e.opId === opId);
+    if (entry && isAuthored(entry.op)) this.#markDirty(entry.op.dataId);
     return opId;
   }
 
@@ -238,7 +257,8 @@ export class World {
     if (!opId) return undefined;
     this.#undoStack.push(opId);
     this.#append({ kind: 'enable', targetOpId: opId }, { recordUndo: false });
-    this.#markDirtyIfAuthored(opId);
+    const entry = this.#log.find((e) => e.opId === opId);
+    if (entry && isAuthored(entry.op)) this.#markDirty(entry.op.dataId);
     return opId;
   }
 
@@ -247,11 +267,6 @@ export class World {
   }
 
   // ---- 内部 ----
-  #markDirtyIfAuthored(opId: OpId): void {
-    const entry = this.#log.find((e) => e.opId === opId);
-    if (entry && isAuthored(entry.op)) this.#dirty.add(entry.op.dataId);
-  }
-
   #append(op: LogOp, opts?: { recordUndo?: boolean }): OpId {
     this.#seq += 1;
     const opId = `op-${this.#seq}`;
@@ -268,7 +283,8 @@ export class World {
     } else {
       if (isAuthored(op)) {
         this.#applyAuthored(op, this.#authored);
-        if (op.kind !== 'create') this.#dirty.add(op.dataId); // 编辑既有数据 → 下游待重算（charter 42 的正向面）
+        if (op.kind === 'paint') this.#markDirty(op.dataId, op.region);
+        else this.#markDirty(op.dataId); // create：新数据出现（引擎据此补算下游）；modify：全域
       }
       if (opts?.recordUndo !== false) {
         this.#undoStack.push(opId);
