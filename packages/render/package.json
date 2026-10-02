@@ -1,0 +1,17 @@
+{
+  "name": "@world/render",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "build": "tsc -p ."
+  },
+  "devDependencies": {
+    "@world/core": "workspace:*",
+    "typescript": "^5.6.3"
+  }
+}

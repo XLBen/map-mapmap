@@ -1,0 +1,17 @@
+{
+  "name": "world-authoring-engine",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "pnpm -r --no-bail typecheck",
+    "test": "vitest run",
+    "build": "pnpm -r --no-bail build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}
