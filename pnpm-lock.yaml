@@ -20,6 +20,12 @@ importers:
       '@world/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@world/processors':
+        specifier: workspace:*
+        version: link:../../packages/processors
+      '@world/render':
+        specifier: workspace:*
+        version: link:../../packages/render
       react:
         specifier: ^18.3.1
         version: 18.3.1

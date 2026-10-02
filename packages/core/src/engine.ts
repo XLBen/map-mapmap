@@ -396,8 +396,9 @@ export class Engine {
   }
 
   #expandFor(def: ProcessorDef, instanceId: string, r: Region): Region {
-    const out = this.#outputs.get(instanceId) as Field | undefined;
-    const res = out?.def.resolution ?? 1;
+    // field 输出用输出网格分辨率；feature 输出（FeatureSet 无 def）按世界单位 1 外扩（ponytail: v0）
+    const out = this.#outputs.get(instanceId);
+    const res = out instanceof Field ? out.def.resolution : 1;
     const pad = (radiusOf(def) + def.invalidation.context.padding) * res;
     return { minX: r.minX - pad, minY: r.minY - pad, maxX: r.maxX + pad, maxY: r.maxY + pad };
   }

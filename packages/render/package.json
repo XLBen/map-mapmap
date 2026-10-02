@@ -8,7 +8,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p .",
-    "build": "tsc -p ."
+    "build": "tsc -p .",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
