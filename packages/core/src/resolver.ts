@@ -1,12 +1,17 @@
 import { Field } from './field';
-import { FeatureSet } from './feature';
+import { FeatureSet, bboxOf } from './feature';
+import type { Feature } from './feature';
 import type { Region } from './coords';
 import type { World } from './authoring';
 import type { DataId, SpatialData } from './spatial';
 import type { Engine } from './engine';
 import type { PinOp } from './authoring';
 
-export type ConflictKind = 'override-vs-pin' | 'constraint-violated' | 'suppressed-target-missing';
+export type ConflictKind =
+  | 'override-vs-pin'
+  | 'constraint-violated'
+  | 'suppressed-target-missing'
+  | 'manual-generated-overlap';
 
 /** Conflict 只标记/警告/建议，不自动纠正（charter 14/50）；数据可查（charter 53）。 */
 export interface Conflict {
@@ -58,21 +63,14 @@ export class Resolver {
       if (!d) continue;
       if (this.#semanticOf(d) === semantic) authored.push({ dataId: id, data: d });
     }
-    if (authored.length > 1) throw new Error(`semantic ${semantic} 有 ${authored.length} 份作者数据，槽位歧义`);
-    if (authored.length === 1) return { ...authored[0], source: 'authored' };
-
-    const gen: Array<{ dataId: DataId; data: Field | FeatureSet; processorId: string }> = [];
+    const generated: Array<{ dataId: DataId; data: Field | FeatureSet; processorId: string }> = [];
     for (const iid of this.engine.instanceIds()) {
       const def = this.engine.processorOf(iid);
       if (def.output.semantic !== semantic) continue;
       const d = this.engine.dataOf(iid);
-      if (d) gen.push({ dataId: `gen:${iid}`, data: d, processorId: def.id });
+      if (d) generated.push({ dataId: `gen:${iid}`, data: d, processorId: def.id });
     }
-    if (gen.length > 1) throw new Error(`semantic ${semantic} 有 ${gen.length} 个生成候选，槽位歧义`);
-    if (gen.length === 1) {
-      return { dataId: gen[0].dataId, data: gen[0].data, source: 'generated', processorId: gen[0].processorId };
-    }
-    return undefined;
+    return this.#pickFieldBase(semantic, authored, generated);
   }
 
   /** 解析一个 semantic 的最终数据（含 Override / 对象抑制 / Constraint 检查）。 */
@@ -80,7 +78,28 @@ export class Resolver {
     const intents = this.world.intents();
     const conflicts: Conflict[] = [];
     const lineage: ResolvedItem['lineage'] = [];
-    const base = this.pickBase(semantic);
+
+    // 收集候选（authored 全部 + generated 全部）
+    const authored: Array<{ dataId: DataId; data: Field | FeatureSet }> = [];
+    for (const id of this.world.dataIds()) {
+      const d = this.world.data(id);
+      if (d && this.#semanticOf(d) === semantic) authored.push({ dataId: id, data: d });
+    }
+    const generated: Array<{ dataId: DataId; data: Field | FeatureSet; processorId: string }> = [];
+    for (const iid of this.engine.instanceIds()) {
+      const def = this.engine.processorOf(iid);
+      if (def.output.semantic !== semantic) continue;
+      const d = this.engine.dataOf(iid);
+      if (d) generated.push({ dataId: `gen:${iid}`, data: d, processorId: def.id });
+    }
+
+    // 要素层：多源合并（charter 12 手绘与生成共存；Q12 不自动去重，重叠 → Conflict）
+    const hasFeatureLayer = [...authored, ...generated].some((c) => c.data instanceof FeatureSet);
+    if (hasFeatureLayer) {
+      return this.#resolveFeatureLayer(semantic, authored, generated, intents, conflicts, lineage);
+    }
+
+    const base = this.#pickFieldBase(semantic, authored, generated);
     if (!base) {
       const item: ResolvedItem = { semantic, source: 'fallback', lineage, conflicts };
       this.#last.set(semantic, conflicts);
@@ -107,30 +126,7 @@ export class Resolver {
       data = copy;
     }
 
-    // 2) 对象级抑制（charter 16/17，Q2）：生成的 FeatureSet 按 lineageId 过滤
-    if (data instanceof FeatureSet && base.source === 'generated') {
-      const sup = intents.filter((o) => o.kind === 'suppress' && o.semantic === semantic);
-      if (sup.length) {
-        const ids = new Set(sup.map((o) => (o.kind === 'suppress' ? o.targetFeatureId : '')));
-        const fs = this.world.registry.createFeatureSet(semantic);
-        const found = new Set<string>();
-        for (const f of data.all()) {
-          if (ids.has(f.id)) {
-            found.add(f.id);
-            continue; // 排除但生成数据本体不动
-          }
-          fs.add(f);
-        }
-        for (const o of sup) {
-          if (o.kind === 'suppress' && !found.has(o.targetFeatureId)) {
-            conflicts.push({ kind: 'suppressed-target-missing', message: `抑制目标不存在: ${o.targetFeatureId}`, target: o.targetFeatureId });
-          }
-        }
-        data = fs;
-      }
-    }
-
-    // 3) Constraint（Q9：只存储 + Conflict 显示，不求解；v0 检查口径 = 字段均值）
+    // 2) Constraint（Q9：只存储 + Conflict 显示，不求解；v0 检查口径 = 字段均值）
     for (const op of intents) {
       if (op.kind !== 'constraint' || op.dataId !== base.dataId) continue;
       if (!(data instanceof Field)) continue;
@@ -153,6 +149,84 @@ export class Resolver {
 
     this.#last.set(semantic, conflicts);
     return { semantic, source: base.source, data, lineage, conflicts };
+  }
+
+  #resolveFeatureLayer(
+    semantic: string,
+    authored: Array<{ dataId: DataId; data: Field | FeatureSet }>,
+    generated: Array<{ dataId: DataId; data: Field | FeatureSet; processorId: string }>,
+    intents: ReturnType<World['intents']>,
+    conflicts: Conflict[],
+    lineage: ResolvedItem['lineage'],
+  ): ResolvedItem {
+    const manual = authored.filter((c): c is { dataId: DataId; data: FeatureSet } => c.data instanceof FeatureSet);
+    const gen = generated.filter((c): c is { dataId: DataId; data: FeatureSet; processorId: string } => c.data instanceof FeatureSet);
+    if (!manual.length && !gen.length) {
+      const item: ResolvedItem = { semantic, source: 'fallback', lineage, conflicts };
+      this.#last.set(semantic, conflicts);
+      return item;
+    }
+
+    const merged = this.world.registry.createFeatureSet(semantic);
+    const supIds = new Set(
+      intents.filter((o) => o.kind === 'suppress' && o.semantic === semantic).map((o) => (o.kind === 'suppress' ? o.targetFeatureId : '')),
+    );
+    const found = new Set<string>();
+    const genFeatures: Feature[] = [];
+    for (const g of gen) {
+      lineage.push({ dataId: g.dataId, source: 'generated', processorId: g.processorId });
+      for (const f of g.data.all()) {
+        if (supIds.has(f.id)) {
+          found.add(f.id);
+          continue; // 排除但生成数据本体不动（charter 17）
+        }
+        genFeatures.push(f);
+      }
+    }
+    const manualFeatures: Feature[] = [];
+    for (const m of manual) {
+      lineage.push({ dataId: m.dataId, source: 'authored' });
+      for (const f of m.data.all()) manualFeatures.push(f);
+    }
+
+    for (const f of genFeatures) merged.add(structuredClone(f));
+    for (const f of manualFeatures) merged.add(structuredClone(f));
+
+    // Q12：手工与生成不自动去重，重叠/相触 → Conflict（包含端点相触，保守上报）
+    for (const mf of manualFeatures) {
+      const mb = bboxOf(mf);
+      for (const gf of genFeatures) {
+        const gb = bboxOf(gf);
+        if (mb.minX <= gb.maxX && gb.minX <= mb.maxX && mb.minY <= gb.maxY && gb.minY <= mb.maxY) {
+          conflicts.push({ kind: 'manual-generated-overlap', message: `手工要素 ${mf.id} 与生成要素 ${gf.id} 空间重叠（共存不去重）`, target: `${mf.id}~${gf.id}` });
+        }
+      }
+    }
+    for (const o of intents) {
+      if (o.kind === 'suppress' && o.semantic === semantic && !found.has(o.targetFeatureId)) {
+        conflicts.push({ kind: 'suppressed-target-missing', message: `抑制目标不存在: ${o.targetFeatureId}`, target: o.targetFeatureId });
+      }
+    }
+
+    const source: ResolvedItem['source'] = manual.length ? 'authored' : 'generated';
+    this.#last.set(semantic, conflicts);
+    return { semantic, source, data: merged, lineage, conflicts };
+  }
+
+  #pickFieldBase(
+    semantic: string,
+    authored: Array<{ dataId: DataId; data: Field | FeatureSet }>,
+    generated: Array<{ dataId: DataId; data: Field | FeatureSet; processorId: string }>,
+  ): { dataId: DataId; data: Field | FeatureSet; source: 'authored' | 'generated'; processorId?: string } | undefined {
+    const fieldAuthored = authored.filter((c) => c.data instanceof Field);
+    if (fieldAuthored.length > 1) throw new Error(`semantic ${semantic} 有 ${fieldAuthored.length} 份作者数据，槽位歧义`);
+    if (fieldAuthored.length === 1) return { ...fieldAuthored[0], source: 'authored' };
+    const fieldGen = generated.filter((c) => c.data instanceof Field);
+    if (fieldGen.length > 1) throw new Error(`semantic ${semantic} 有 ${fieldGen.length} 个生成候选，槽位歧义`);
+    if (fieldGen.length === 1) {
+      return { dataId: fieldGen[0].dataId, data: fieldGen[0].data, source: 'generated', processorId: fieldGen[0].processorId };
+    }
+    return undefined;
   }
 
   /** Conflict Map（charter 53）。 */

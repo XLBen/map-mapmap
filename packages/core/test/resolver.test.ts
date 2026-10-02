@@ -48,12 +48,12 @@ function setup() {
     inputs: [{ name: 'elevation', kind: 'field', dataType: 'scalar', semantic: 'elevation' }],
     output: { kind: 'feature', dataType: 'line', semantic: 'routes.gen' },
     invalidation: { policy: { propagation: 'global' }, context: { padding: 0, seam: 'extend' } },
-    run: (_inputs, _p, _ctx) => {
-      const fs = world.registry.createFeatureSet('routes.gen');
-      fs.add({ kind: 'line', id: 'gen-r1', semantic: 'routes.gen', points: [{ x: 1, y: 1 }, { x: 5, y: 5 }], attributes: {} });
-      fs.add({ kind: 'line', id: 'gen-r2', semantic: 'routes.gen', points: [{ x: 20, y: 20 }, { x: 25, y: 25 }], attributes: {} });
-      return { features: fs };
-    },
+    run: (_inputs, _p, _ctx) => ({
+      features: [
+        { kind: 'line' as const, id: 'gen-r1', semantic: 'routes.gen', points: [{ x: 1, y: 1 }, { x: 5, y: 5 }], attributes: {} },
+        { kind: 'line' as const, id: 'gen-r2', semantic: 'routes.gen', points: [{ x: 20, y: 20 }, { x: 25, y: 25 }], attributes: {} },
+      ],
+    }),
   };
   engine.registerProcessor(copyDef);
   engine.registerProcessor(routesDef);

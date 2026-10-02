@@ -114,24 +114,27 @@ export class Engine {
 
   /** 世界作者数据变更或新增意图 → 传播失效到所有下游（Dirty Region 真实传播，charter 31）。 */
   sync(): void {
-    const frontier: Array<{ semantic: string; region?: Region }> = [];
+    const frontier: Array<{ semantic: string; region?: Region; fromWorld: boolean }> = [];
     for (const d of this.world.drainDirtyEntries()) {
       const s = this.#semanticOf(d.dataId);
       if (!s) continue;
-      for (const r of d.regions) frontier.push({ semantic: s, region: r });
+      for (const r of d.regions) frontier.push({ semantic: s, region: r, fromWorld: true });
     }
     // 意图与意图标记（override/pin/suppress/removeIntent/undo）= 用户可见变化 → 相应 semantic 整域待重算
     for (const e of this.world.log) {
       if (e.seq <= this.#lastSeenSeq) continue;
       this.#lastSeenSeq = e.seq;
       const s = this.#intentSemantic(e.op);
-      if (s) frontier.push({ semantic: s, region: undefined });
+      if (s) frontier.push({ semantic: s, region: undefined, fromWorld: true });
     }
     while (frontier.length) {
       const cur = frontier.shift()!;
       for (const inst of this.#instances.values()) {
         const def = this.#processors.get(inst.processorId)!;
-        if (!def.inputs.some((p) => p.semantic === cur.semantic)) continue;
+        const inputHit = def.inputs.some((p) => p.semantic === cur.semantic);
+        // 产出命中仅在初始世界事件生效：抑制/意图需重新掩蔽生成数据；传播链上会自我重复
+        const outputHit = cur.fromWorld && def.output.semantic === cur.semantic;
+        if (!inputHit && !outputHit) continue;
         const entry = this.entryOf(inst.instanceId);
         if (cur.region) entry.pending.push(this.#expandFor(def, inst.instanceId, cur.region));
         else {
@@ -140,7 +143,9 @@ export class Engine {
         }
         const next = this.#statusWithPending(entry);
         entry.status = next;
-        frontier.push({ semantic: def.output.semantic, region: cur.region });
+        if (def.output.semantic !== cur.semantic) {
+          frontier.push({ semantic: def.output.semantic, region: cur.region, fromWorld: false });
+        }
       }
     }
     this.#propagateBlocking();
@@ -176,16 +181,17 @@ export class Engine {
 
       const clip = opts?.region;
       if (def.output.kind === 'feature') {
-        // Phase B v0：feature 输出全量重建（区域级增量随 #11 水文链落地）
+        // feature 输出 v0 全量重建（区域级增量随后续压测票落地）
         const extent = this.#extentFor(iid);
         if (!extent) continue;
         const region = clip ? (intersect(extent, clip) ?? extent) : extent;
+        const produced = def.run(inputs, inst.params, { instanceId: iid, region, write: () => {} });
         const fs = this.world.registry.createFeatureSet(def.output.semantic);
-        const produced = def.run(inputs, inst.params, { region, write: () => {} });
         if (produced) {
-          for (const f of produced.features.all()) fs.add(f);
+          for (const f of produced.features) fs.add(f);
         }
-        this.#outputs.set(iid, fs);
+        // 空间抑制（Q8）：生成数据本体入库前按区域×semantic 掩蔽（掩蔽副本，不碰输入）
+        this.#outputs.set(iid, this.#maskSpatial(def.output.semantic, fs));
         entry.pending = clip ? entry.pending.flatMap((r) => subtractRect(r, clip)) : [];
         entry.status = entry.pending.length ? 'partially-outdated' : 'current';
         continue;
@@ -209,7 +215,7 @@ export class Engine {
       const pad = (radiusOf(def) + def.invalidation.context.padding) * out.def.resolution;
       const tiles = this.#tilesFor(out, targets, pad);
       try {
-        for (const t of tiles) this.#runTile(def, inst.params, inputs, out, t.tx, t.ty, t.extent);
+        for (const t of tiles) this.#runTile(def, iid, inst.params, inputs, out, t.tx, t.ty, t.extent);
       } catch (e) {
         entry.status = 'error';
         entry.error = (e as Error).message;
@@ -265,7 +271,13 @@ export class Engine {
 
   #resolveInput(port: PortSpec): Field | FeatureSet | undefined {
     if (port.semantic !== undefined) {
-      // 槽位解析走 Resolver：authored > generated（charter 51，禁 last-run-wins）+ 空间抑制 mask（Q8）
+      // feature 端口消费 Resolved 合并结果（charter 56：手工+生成共存，抑制已过滤）
+      if (port.kind === 'feature') {
+        const item = this.resolver.resolve(port.semantic);
+        if (!item.data) return undefined;
+        return this.#maskSpatial(port.semantic, item.data);
+      }
+      // field 端口：槽位解析走 Resolver（charter 51，禁 last-run-wins）+ 空间抑制 mask（Q8）
       const picked = this.resolver.pickBase(port.semantic);
       if (!picked) return undefined;
       return this.#maskSpatial(port.semantic, picked.data);
@@ -437,6 +449,7 @@ export class Engine {
       tileSize: src.def.tileSize,
       lodLevels: src.def.lodLevels,
       nodata: src.def.nodata,
+      legend: def.output.legend,
       fill: () => src.def.nodata,
     });
   }
@@ -472,6 +485,7 @@ export class Engine {
 
   #runTile(
     def: ProcessorDef,
+    instanceId: string,
     params: Record<string, unknown>,
     inputs: Record<string, Field | FeatureSet>,
     out: Field,
@@ -485,6 +499,7 @@ export class Engine {
     const comps = d.kind === 'vector' ? 2 : 1;
     const arr = new Float32Array(ts * ts * comps).fill(d.nodata);
     def.run(inputs, params, {
+      instanceId,
       region: extent,
       write: (p, v) => {
         const lx = Math.round((p.x - extent.minX) / res);
